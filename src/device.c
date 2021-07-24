@@ -168,7 +168,7 @@ session_data_get (FprintDevicePrivate *priv)
   /* Get the current pointer and mark the pointer as "busy". */
   do
     {
-      cur = priv->_session;
+      cur = g_atomic_pointer_get (&priv->_session);
       /* Swap if cur is valid, otherwise busy loop. */
     }
   while (cur == invalid || !g_atomic_pointer_compare_and_exchange (&priv->_session, cur, invalid));
@@ -205,7 +205,7 @@ session_data_set_new (FprintDevicePrivate *priv, gchar *sender, gchar *username)
   /* Get the current (but not if it is busy) and put the new one in place. */
   do
     {
-      old = priv->_session;
+      old = g_atomic_pointer_get (&priv->_session);
       /* Swap if old is valid, otherwise busy loop as someone is ref'ing it currently. */
     }
   while (old == invalid || !g_atomic_pointer_compare_and_exchange (&priv->_session, old, new));
