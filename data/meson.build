@@ -12,9 +12,16 @@ configure_file(
 )
 
 if get_option('systemd')
+    if get_option('libfprint_private')
+        syscall_filter = '# permit seccomp so that fprintd can block memfd_create\nSystemCallFilter=@system-service seccomp'
+    else
+        syscall_filter = 'SystemCallFilter=@system-service\nSystemCallFilter=~memfd_create'
+    endif
+
     configure_file(
         configuration: configuration_data({
             'libexecdir': fprintd_installdir,
+            'syscall_filter' : syscall_filter,
         }),
         input: 'fprintd.service.in',
         output: 'fprintd.service',

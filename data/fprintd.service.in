@@ -18,7 +18,8 @@ StateDirectoryMode=0700
 ProtectHome=true
 PrivateTmp=true
 
-SystemCallFilter=@system-service
+SystemCallArchitectures=native
+@syscall_filter@
 
 # Network
 PrivateNetwork=true

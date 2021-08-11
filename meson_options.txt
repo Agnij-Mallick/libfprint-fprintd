@@ -23,3 +23,7 @@ option('gtk_doc',
     type: 'boolean',
     value: false,
     description: 'Use gtk-doc to build documentation')
+option('libfprint_private',
+    type: 'boolean',
+    value: true,
+    description: 'Create private copy of libfprint code pages at runtime')

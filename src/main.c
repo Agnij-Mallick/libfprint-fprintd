@@ -18,6 +18,8 @@
  * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
 
+#define _GNU_SOURCE
+
 #include "config.h"
 
 #include <locale.h>
@@ -35,6 +37,17 @@
 #include "fprintd.h"
 #include "storage.h"
 #include "file_storage.h"
+
+#ifdef CONFIG_LIBFPRINT_PRIVATE
+#include <fcntl.h>
+#include <link.h>
+#include <sys/mman.h>
+
+#include <linux/seccomp.h>
+#include <linux/filter.h>
+#include <sys/syscall.h>
+#include <sys/prctl.h>
+#endif
 
 fp_storage store;
 
@@ -146,6 +159,106 @@ on_name_lost (GDBusConnection *connection,
   g_main_loop_quit (loop);
 }
 
+#ifdef CONFIG_LIBFPRINT_PRIVATE
+static void
+create_private_executable_copy (void *addr, size_t length)
+{
+  void *mapping = NULL;
+  int memfd;
+
+  /* memfd is more robust (and we can lock it down later). */
+  memfd = memfd_create ("libfprint-copy", MFD_ALLOW_SEALING);
+  if (memfd < 0)
+    g_error ("Could not create memfd for libfprint code");
+
+  if (ftruncate (memfd, length) < 0)
+    g_error ("Could not set length of memfd");
+
+  mapping = mmap (NULL, length, PROT_WRITE, MAP_SHARED, memfd, 0);
+  if (mapping == MAP_FAILED)
+    g_error ("Failed to mmap memfd to copy data");
+
+  memcpy (mapping, addr, length);
+  if (munmap (mapping, length) < 0)
+    g_error ("Error unmapping area for copying libfprint code into");
+
+  if (fcntl (memfd, F_ADD_SEALS, F_SEAL_SEAL | F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_WRITE) < 0)
+    g_error ("Failed to seal memfd against modifications");
+
+  mapping = mmap (addr, length, PROT_READ | PROT_EXEC, MAP_PRIVATE | MAP_FIXED, memfd, 0);
+  if (mapping != addr)
+    g_error ("Failed to mmap memfd as executable memory");
+
+  close (memfd);
+}
+
+static int
+dl_iterate_cb (struct dl_phdr_info *info, size_t size, void *data)
+{
+  void *addr;
+
+  if (strstr (info->dlpi_name, "libfprint") == NULL)
+    return 0;
+
+  for (int j = 0; j < info->dlpi_phnum; j++)
+    {
+      if (info->dlpi_phdr[j].p_type != PT_LOAD)
+        continue;
+
+      if ((info->dlpi_phdr[j].p_flags & 0x1) != 0x1)
+        continue;
+
+      if (info->dlpi_phdr[j].p_flags != 0x5)
+        g_error ("Found executable mapping that is not RX only.");
+
+      addr = (void *) (info->dlpi_addr + info->dlpi_phdr[j].p_vaddr);
+      create_private_executable_copy (addr, info->dlpi_phdr[j].p_memsz);
+
+      *(size_t *) data += info->dlpi_phdr[j].p_memsz;
+    }
+
+  return 1;
+}
+
+static void
+protect_libfprint (void)
+{
+  size_t protected_bytes = 0x0;
+
+  dl_iterate_phdr (dl_iterate_cb, &protected_bytes);
+
+  if (protected_bytes == 0)
+    g_error ("The libfprint executable memory was not protected againts side-channel attacks");
+}
+
+static void
+disable_memfd (void)
+{
+  static struct sock_filter filter[] = {
+    /* [1] Load syscall number */
+    BPF_STMT (BPF_LD | BPF_W | BPF_ABS,
+              (offsetof (struct seccomp_data, nr))),
+
+    /* [2] Test whether it is  */
+    BPF_JUMP (BPF_JMP | BPF_JEQ | BPF_K, SYS_memfd_create, 0, 1),
+
+    /* [3] Kill process */
+    BPF_STMT (BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS),
+
+    /* [4] Allow everything other than SYS_memfd_create */
+    BPF_STMT (BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
+  };
+  static struct sock_fprog prog = {
+    .len = G_N_ELEMENTS (filter),
+    .filter = filter,
+  };
+
+  prctl (PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+  if (syscall (SYS_seccomp, SECCOMP_SET_MODE_FILTER, 0, &prog))
+    g_error ("Could not install seccomp filter to prohibit memfd_create");
+}
+#endif
+
 int
 main (int argc, char **argv)
 {
@@ -155,6 +268,11 @@ main (int argc, char **argv)
   g_autoptr(FprintManager) manager = NULL;
   g_autoptr(GDBusConnection) connection = NULL;
   guint32 request_name_ret;
+
+#ifdef CONFIG_LIBFPRINT_PRIVATE
+  protect_libfprint ();
+  disable_memfd ();
+#endif
 
   setlocale (LC_ALL, "");
 

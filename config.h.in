@@ -12,3 +12,6 @@
 
 /* Whether current polkit version supports autopointers */
 #mesondefine POLKIT_HAS_AUTOPOINTERS
+
+/* Whether to enable the libfprint side-channel cache attack workarounds. */
+#mesondefine CONFIG_LIBFPRINT_PRIVATE
